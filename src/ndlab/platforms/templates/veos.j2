@@ -1,0 +1,27 @@
+{%- set layer3_interface = (
+  """no switchport
+  no shut
+  ip ospf area 0""") %}
+!
+hostname {{ info.hostname }}
+dns domain example.com
+!
+interface Loopback0
+  ip address {{ info.loopback }} 255.255.255.255
+  ip ospf area 0
+!
+ip routing
+router ospf 1
+  router-id {{ info.loopback }}
+
+
+{%- for interface in info.interfaces %}
+interface {{ get_interface(interface.interface) }}
+  description -> {{ interface.bridge }}
+  {{ layer3_interface }}
+  ip address {{ interface.ipaddress.ip }} {{ interface.ipaddress.netmask }}
+!
+{%- endfor %}
+
+!
+end

@@ -1,0 +1,6 @@
+click
+dacite
+jinja2
+psutil
+pyyaml
+tabulate

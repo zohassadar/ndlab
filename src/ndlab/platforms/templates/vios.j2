@@ -1,0 +1,26 @@
+!
+hostname {{ info.hostname }}
+!
+lldp run
+ip domain-name example.com
+crypto key generate rsa general-keys mod 2048
+!
+interface Loopback0
+  ip address {{ info.loopback }} 255.255.255.255
+!
+router ospf 1
+  router-id {{ info.loopback }}
+  network 0.0.0.0 0.0.0.0 area 0
+!
+{%- for interface in info.interfaces %}
+interface {{ get_interface(interface.interface) }}
+  description -> {{ interface.bridge }}
+  no shut
+  ip address {{ interface.ipaddress.ip }} {{ interface.ipaddress.netmask }}
+!
+{%- endfor %}
+!
+line vty 0 4
+ login local
+ transport input ssh
+end

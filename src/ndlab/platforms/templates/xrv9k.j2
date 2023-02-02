@@ -1,0 +1,32 @@
+!
+hostname {{ info.hostname }}
+domain name example.com
+!
+line default transport input ssh
+ssh server v2
+!
+interface Loopback0
+  ip address {{ info.loopback }} 255.255.255.255
+!
+router ospf 1
+ router-id {{ info.loopback }}
+ area 0
+ interface Loopback0
+{%- for interface in info.interfaces %}
+ interface {{ get_interface(interface.interface) }}
+ {%- endfor %}
+exit
+exit
+exit
+{%- for interface in info.interfaces  %}
+interface {{ get_interface(interface.interface) }}
+  description -> {{ interface.bridge }}
+  no shut
+  ip address {{ interface.ipaddress.ip }} {{ interface.ipaddress.netmask }}
+!
+{%- endfor %}
+
+!
+commit
+end
+!

@@ -1,0 +1,14 @@
+.ndlab
+
+*.qcow2
+*.vmdk
+*.fd
+*.iso
+*.img
+
+*.pyc
+*.egg-info
+
+*.yml
+*.sh
+.coverage

@@ -1,0 +1,18 @@
+/system identity set name={{ info.hostname }}
+
+/interface bridge add name=loopback0
+/routing ospf instance add name=default
+/routing ospf instance set name=default numbers=default router-id={{ info.loopback }}
+/routing ospf area add disabled=no instance=default name=backbone
+/routing ospf interface-template add area=backbone disabled=no networks=0.0.0.0/0
+/routing ospf network add area=backbone network=0.0.0.0/0
+
+/ip address add interface=loopback0 address={{ info.loopback }} netmask=255.255.255.255
+
+{%- for interface in info.interfaces %}
+{%- set intf = get_interface(interface.interface) %}
+/ip address add address={{ interface.ipaddress.ip }} netmask={{ interface.ipaddress.netmask }} interface={{ intf }}
+/interface ethernet set [/interface find where name={{ intf }}] comment="-> {{ interface.bridge }}"
+{%- endfor %}
+
+/
