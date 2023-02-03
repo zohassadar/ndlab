@@ -127,7 +127,12 @@ logger.addHandler(logging.NullHandler())
 
 def signal_handler(signal, frame):
     print(f"{signal} received.  Canceling.")
-    sys.exit()
+    try:
+        asyncio.get_running_loop().stop()
+    except Exception as exc:
+        logger.error(f"Exception: {exc!s}")
+    time.sleep(3)
+    sys.exit("heh")
 
 
 def error_exit(msg):
@@ -136,67 +141,53 @@ def error_exit(msg):
     sys.exit(1)
 
 
-def get_packets_from_tcp_buffer(buffer: bytes) -> list[bytes]:
-    packets = []
-    _original_length = len(buffer)
-    _buffer = collections.deque(buffer)
-    while _buffer:
-        try:
-            reported_size_packed = bytes(_buffer.popleft() for _ in range(LENGTH))
-        except IndexError:
-            logger.error(f"Unable to read size from tcp buffer")
-            break
-        reported_size_bytes = struct.unpack("I", reported_size_packed)[0]
-        reported_size_int = socket.ntohl(reported_size_bytes)
-        try:
-            packet = bytes(_buffer.popleft() for _ in range(reported_size_int))
-        except IndexError:
-            logger.error(
-                f"Unable to read {reported_size_int} bytes from payload.  OG: {_original_length}"
-            )
-            break
-        logger.debug(f"Found a packet with {reported_size_int} bytes")
-        packets.append(packet)
-
-    return packets
-
-
 class TCPBuffer:
     def __init__(self):
-        self._buffer = b""
+        self._buffer = collections.deque()
 
-    def get_packet_from_payload(self, payload: bytes) -> bytes:
-        self._buffer += payload
-        buffer_length = len(self._buffer)
-        logger.debug(f"Decoding packet from tcp stream.  Buffersize is {buffer_length}")
-        if buffer_length < LENGTH:
-            logger.error(
-                f"Invalid buffer length {buffer_length}.  Returning empty result"
+    def _empty_buffer(self):
+        while self._buffer:
+            self._buffer.pop()
+
+    def _current_buffer_size(self):
+        return len(self._buffer)
+
+    def get_packets_from_tcp_data(self, data: bytes) -> list[bytes]:
+        packets = []
+        self._buffer.extend(data)
+        while self._buffer:
+            try:
+                reported_size_packed = bytes(
+                    self._buffer.popleft() for _ in range(LENGTH)
+                )
+            except IndexError:
+                logger.error(f"Unable to read size from tcp buffer")
+                break
+            reported_size_bytes = struct.unpack("I", reported_size_packed)[0]
+            reported_size_int = socket.ntohl(reported_size_bytes)
+            if reported_size_int > MTU:
+                self._empty_buffer()
+                logger.error(f"Unreasonable size {reported_size_int}.  Clearing buffer")
+                break
+            if reported_size_int > self._current_buffer_size():
+                reported_size_list = list(reported_size_packed)
+                while reported_size_list:
+                    self._buffer.appendleft(reported_size_list.pop())
+                logger.info(f"Storing bytes in the buffer for the next round")
+                break
+
+            logger.debug(
+                f"Attempting to read {reported_size_int} bytes with {self._current_buffer_size()} bytes left"
             )
-            return b""
+            try:
+                packet = bytes(self._buffer.popleft() for _ in range(reported_size_int))
+            except IndexError:
+                logger.error(f"Unable to read {reported_size_int} bytes from payload")
+                break
+            logger.debug(f"Found a packet with {reported_size_int} bytes")
+            packets.append(packet)
 
-        reported_size_packed, self._buffer = (
-            self._buffer[:LENGTH],
-            self._buffer[LENGTH:],
-        )
-        reported_size_unpacked = struct.unpack("I", reported_size_packed)[0]
-        reported_size = socket.ntohl(reported_size_unpacked)
-        if reported_size > MTU:
-            logger.error(f"Stupid size: {reported_size}.  Dumping buffer.")
-            self._buffer = b""
-            return b""
-
-        if reported_size > buffer_length:
-            logger.error(
-                f"Buffer has {buffer_length} but size is {reported_size}. Waiting."
-            )
-            return b""
-        packet, self._buffer = (
-            self._buffer[:reported_size],
-            self._buffer[reported_size:],
-        )
-
-        return packet
+        return packets
 
 
 def get_payload_from_packet(packet: bytes) -> bytes:
@@ -241,14 +232,17 @@ class Bridge:
         self.task: asyncio.Task | None = None
 
     async def connect(self):
+        for endpoint, other_endpoint in itertools.permutations(self._combined, 2):
+            other_endpoint.send_queues.append(endpoint.receive_queue)
+        logger.debug(f"Awaiting tasks for connection {self.name}")
+        group = asyncio.gather(*[endpoint.connect() for endpoint in self._combined])
         try:
-            for endpoint, other_endpoint in itertools.permutations(self._combined, 2):
-                other_endpoint.send_queues.append(endpoint.receive_queue)
-            logger.debug(f"Awaiting tasks for connection {self.name}")
-            await asyncio.gather(*[endpoint.connect() for endpoint in self._combined])
+            await group
         except asyncio.CancelledError:
             logger.error("Connect cancelled")
-            raise
+            group.cancel()
+            logger.error("All tasks cancelled")
+        return
 
 
 class TCPClient:
@@ -269,15 +263,19 @@ class TCPClient:
         self.reader: asyncio.StreamReader | None = None
 
     async def connect(self):
-        logger.info(f"{self!s} Attempting to connect to port {self.port}")
-        self.reader, self.writer = await asyncio.open_connection(
-            self.ip_address,
-            self.port,
-        )
-        await asyncio.gather(
-            self.write_handler(self.writer),
-            self.read_handler(self.reader),
-        )
+        try:
+            logger.info(f"{self!s} Attempting to connect to port {self.port}")
+            self.reader, self.writer = await asyncio.open_connection(
+                self.ip_address,
+                self.port,
+            )
+            await asyncio.gather(
+                self.write_handler(self.writer),
+                self.read_handler(self.reader),
+            )
+        except asyncio.CancelledError:
+            logger.error("TCP Client cancelled")
+            return
 
     async def read_handler(
         self,
@@ -285,15 +283,16 @@ class TCPClient:
     ):
         # tcp_buffer = TCPBuffer()
         logger.info(f"{self!s} reading for {len(self.send_queues)} queues")
+        tcp_buffer = TCPBuffer()
         while True:
             try:
-                payload = await reader.read(MAX_READ)
-                logger.log(9, f"{self} read {len(payload)} bytes")
-                if not payload:
+                data = await reader.read(MAX_READ)
+                logger.log(9, f"{self} read {len(data)} bytes")
+                if not data:
                     logger.error(f"{self!s} read empty packet.  Disconnecting.")
                     break
 
-                packets = get_packets_from_tcp_buffer(payload)
+                packets = tcp_buffer.get_packets_from_tcp_data(data)
                 queues = len(self.send_queues)
                 for packet in packets:
                     for index, queue in enumerate(self.send_queues, start=1):
@@ -379,11 +378,14 @@ class TapInterfaceClient:
             logger.error(f"Unable to close tap", exc_info=True)
 
     async def connect(self):
-
-        await asyncio.gather(
-            self.write_tap(),
-            self.read_tap(),
-        )
+        try:
+            await asyncio.gather(
+                self.write_tap(),
+                self.read_tap(),
+            )
+        except asyncio.CancelledError:
+            logger.error("Tap cancelled")
+            return
 
     async def write_tap(self):
         while True:
@@ -449,11 +451,14 @@ class PhysicalNetworkInterfaceClient:
             self.socket.close()
 
     async def connect(self):
-
-        await asyncio.gather(
-            self.write_physical(),
-            self.read_physical(),
-        )
+        try:
+            await asyncio.gather(
+                self.write_physical(),
+                self.read_physical(),
+            )
+        except asyncio.CancelledError:
+            logger.error("line 464")
+            return
 
     async def write_physical(self):
 
@@ -543,7 +548,7 @@ class TCPSnifferServer:
             )
         except asyncio.CancelledError:
             logger.info(f"Sniffer Server cancelled")
-            raise
+            return
 
     async def start_session(
         self,
@@ -676,7 +681,7 @@ def start_bridge(
 
     except asyncio.CancelledError:
         logger.error("This has been reached?")
-    except Exception as exc:
+    except BaseException as exc:
         error_exit(f"Problem! {type(exc).__name__}: {exc!s}")
 
 
