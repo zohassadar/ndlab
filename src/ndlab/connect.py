@@ -17,7 +17,9 @@ import struct
 import sys
 import time
 import typing as T
+import re
 
+import pathlib
 import ndlab.common as common
 
 MAX_CAPTURE_CONNECTIONS = 1
@@ -30,27 +32,26 @@ LENGTH = 4
 
 
 def is_device_promiscuous(interface: str) -> bool:
-    import pathlib
-    import re
-
     FLAGS = "flags"
     PROMISCUOUS_FLAG = 0x100
-    SYS_DEVICES = "/sys/devices/"
+    SYS_CLASS_NET = "/sys/class/net"
+    if not os.name == "posix":
+        raise RuntimeError(
+            f"Unable to check if {interface} is promiscuous in non-linux"
+        )
     logger.debug(f"is_device_promiscuous called for {interface!r}")
-    for file in pathlib.Path(SYS_DEVICES).rglob(interface):
-        logger.debug(f"Found {file!r}")
-        if not (flagsfile := (file / FLAGS)).exists():
-            raise RuntimeError(f"{FLAGS} not found in {file}")
-        try:
-            flags = open(flagsfile).read().strip()
-        except:
-            logger.error(f"Unable to open {flagsfile}", exc_info=True)
-            raise
-        logger.debug(f"Flag file contents: {flags}")
-        if not re.match(r"0x\d+", flags):
-            raise RuntimeError(f"Unexpected flag file contents {flagsfile}: {flags!r}")
-        return bool(eval(flags) & PROMISCUOUS_FLAG)
-    raise RuntimeError(f"Directory {interface!r} not found in {SYS_DEVICES!r}")
+    flagsfile = pathlib.Path(SYS_CLASS_NET) / interface
+    if not (flagsfile := (flagsfile / FLAGS)).exists():
+        raise RuntimeError(f"{FLAGS} not found in {flagsfile}")
+    try:
+        flags = open(flagsfile).read().strip()
+    except:
+        logger.error(f"Unable to open {flagsfile}", exc_info=True)
+        raise
+    logger.debug(f"Flag file contents: {flags}")
+    if not re.match(r"0x\d+", flags):
+        raise RuntimeError(f"Unexpected flag file contents {flagsfile}: {flags!r}")
+    return bool(eval(flags) & PROMISCUOUS_FLAG)
 
 
 class PCAP:
@@ -283,7 +284,6 @@ class TCPClient:
 
 class TapInterfaceClient:
     TUNSETIFF = 0x400454CA
-    TUNSETOWNER = TUNSETIFF + 2
     IFF_TAP = 0x0002
     IFF_NO_PI = 0x1000
 
@@ -297,14 +297,15 @@ class TapInterfaceClient:
         # setup tap side
 
         self.tap = os.open("/dev/net/tun", os.O_RDWR)
+        args = struct.pack(
+            "16sH",
+            interface.encode(),
+            self.IFF_TAP | self.IFF_NO_PI,
+        )
         fcntl.ioctl(
             self.tap,
             self.TUNSETIFF,
-            struct.pack(
-                "16sH",
-                interface.encode(),
-                self.IFF_TAP | self.IFF_NO_PI,
-            ),
+            args,
         )
 
     async def disconnect(self):
@@ -353,6 +354,8 @@ class PhysicalNetworkInterfaceClient:
 
     def __init__(self, interface: str):
         self.interface = interface
+        if not is_device_promiscuous(interface):
+            raise RuntimeError(f"Interface {interface} is not in promiscuous mode.")
         self.receive_queue = asyncio.Queue()
         self.send_queues: list[asyncio.Queue] = []
         self.socket = socket.socket(
@@ -526,6 +529,7 @@ def start_bridge(
     tcp_instances = []
 
     physical_instance = None
+    # Hack to separate these for now
     if physical_endpoint and "tap" in physical_endpoint:
         physical_instance = TapInterfaceClient(physical_endpoint)
     else:
@@ -571,9 +575,7 @@ def start_bridge(
 
 
 """
-sudo ip tuntap add mod tap name tappity0
-ip link set dev tappity0 up
-ip address add 192.168.13.1/24 dev tappity0
-
-
+ip tuntap add mod tap name <interface name with tap in it>
+ip link set dev <tap_int> up
+ip address add 192.168.13.1/24 dev <tap_int>
 """
