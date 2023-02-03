@@ -39,7 +39,7 @@ class CiscoCSR(device.DefaultNetworkDevice):
         console.write_wait(b"hostname csr")
         console.write_wait(b"lldp run")
         console.write_wait(
-            f"username {console.username} privilege 15 {console.password}".encode(),
+            f"username {common.USERNAME} privilege 15 password {common.PASSWORD}".encode()
         )
         for index in range(self.NIC_COUNT):
             console.write_wait(f"interface {self.get_interface(index)}".encode())

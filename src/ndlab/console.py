@@ -55,6 +55,7 @@ class ConsoleDumper:
             self.telnet.write(self.tail)
 
     def expect(self):
+        # todo: rewrite this to be less clever and more functional
         if not self.telnet:
             raise RuntimeError(f"No active telnet session")
         if not self.started:
