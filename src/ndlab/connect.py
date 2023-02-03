@@ -1,12 +1,13 @@
 """"
+tcp_buffer = 4 bytes size header + packet (1 or more)
 packet = layer2 packet
-payload = 4 bytes size header + packet
 pcap = 16 byte pcap header + packet
 
 """
 from __future__ import annotations
 
 import asyncio
+import collections
 import fcntl
 import ipaddress
 import itertools
@@ -126,7 +127,7 @@ logger.addHandler(logging.NullHandler())
 
 def signal_handler(signal, frame):
     print(f"{signal} received.  Canceling.")
-    raise asyncio.CancelledError
+    sys.exit()
 
 
 def error_exit(msg):
@@ -135,24 +136,26 @@ def error_exit(msg):
     sys.exit(1)
 
 
-def get_packet_from_payload(payload: bytes) -> bytes:
-    payload_length = len(payload)
-    if payload_length < LENGTH:
-        logger.error(f"Invalid length {payload_length}.  Returning empty result")
-        return b""
+def get_packets_from_tcp_buffer(buffer: bytes) -> list[bytes]:
+    packets = []
+    _buffer = collections.deque(buffer)
+    while _buffer:
+        try:
+            reported_size_packed = bytes(_buffer.popleft() for _ in range(LENGTH))
+        except IndexError:
+            logger.error(f"Unable to read size from tcp buffer")
+            break
+        reported_size_bytes = struct.unpack("I", reported_size_packed)[0]
+        reported_size_int = socket.ntohl(reported_size_bytes)
+        try:
+            packet = bytes(_buffer.popleft() for _ in range(reported_size_int))
+        except IndexError:
+            logger.error(f"Unable to read {reported_size_int} bytes from payload")
+            break
+        logger.debug(f"Found a packet with {reported_size_int} bytes")
+        packets.append(packet)
 
-    reported_size_packed, packet = payload[:LENGTH], payload[LENGTH:]
-    reported_size_unpacked = struct.unpack("I", reported_size_packed)[0]
-    reported_size = socket.ntohl(reported_size_unpacked)
-
-    packet_length = len(packet)
-    if packet_length != reported_size:
-        logger.error(
-            f"Claim of {reported_size} does not match size {packet_length}.  Returning empty result.",
-        )
-        return b""
-
-    return packet
+    return packets
 
 
 class TCPBuffer:
@@ -235,10 +238,14 @@ class Bridge:
         self.task: asyncio.Task | None = None
 
     async def connect(self):
-        for endpoint, other_endpoint in itertools.permutations(self._combined, 2):
-            other_endpoint.send_queues.append(endpoint.receive_queue)
-        logger.debug(f"Awaiting tasks for connection {self.name}")
-        await asyncio.gather(*[endpoint.connect() for endpoint in self._combined])
+        try:
+            for endpoint, other_endpoint in itertools.permutations(self._combined, 2):
+                other_endpoint.send_queues.append(endpoint.receive_queue)
+            logger.debug(f"Awaiting tasks for connection {self.name}")
+            await asyncio.gather(*[endpoint.connect() for endpoint in self._combined])
+        except asyncio.CancelledError:
+            logger.error("Connect cancelled")
+            raise
 
 
 class TCPClient:
@@ -282,14 +289,15 @@ class TCPClient:
                 if not payload:
                     logger.error(f"{self!s} read empty packet.  Disconnecting.")
                     break
-                if not (packet := get_packet_from_payload(payload)):
-                    # if not (packet := tcp_buffer.get_packet_from_payload(payload)):
-                    logger.error("Error decoding packet.  Tossing.")
-                    continue
+
+                packets = get_packets_from_tcp_buffer(payload)
                 queues = len(self.send_queues)
-                for index, queue in enumerate(self.send_queues, start=1):
-                    logger.log(9, f"{self!s} forwarding to queue {index} of {queues}")
-                    await queue.put(packet)
+                for packet in packets:
+                    for index, queue in enumerate(self.send_queues, start=1):
+                        logger.log(
+                            9, f"{self!s} forwarding to queue {index} of {queues}"
+                        )
+                        await queue.put(packet)
 
             except ConnectionResetError:
                 logger.error(f"{self!s}: Connection reset")
@@ -513,7 +521,7 @@ class TCPSnifferServer:
                     )
                     await capture_queue.put(pcap)
             except asyncio.CancelledError:
-                logger.info(f"physical reader cancelled")
+                logger.info(f"sniffer forwarder cancelled")
                 raise
 
     async def connect(self):
@@ -524,11 +532,15 @@ class TCPSnifferServer:
             port=self.port,
             limit=MAX_CAPTURE_CONNECTIONS,
         )
+        try:
 
-        await asyncio.gather(
-            server,
-            self.forward_payloads_to_sessions(),
-        )
+            await asyncio.gather(
+                server,
+                self.forward_payloads_to_sessions(),
+            )
+        except asyncio.CancelledError:
+            logger.info(f"Sniffer Server cancelled")
+            raise
 
     async def start_session(
         self,
@@ -598,7 +610,10 @@ class TCPSnifferServer:
 
 async def connect(connection: Bridge):
     logger.info(f"asyncio entrypoint into bridge connection")
-    await connection.connect()
+    try:
+        await connection.connect()
+    except asyncio.CancelledError:
+        error_exit("Cancelled in entrypoint")
 
 
 def start_bridge(
@@ -656,6 +671,8 @@ def start_bridge(
         asyncio.run(connect(bridge))
         error_exit("exiting")
 
+    except asyncio.CancelledError:
+        logger.error("This has been reached?")
     except Exception as exc:
         error_exit(f"Problem! {type(exc).__name__}: {exc!s}")
 
