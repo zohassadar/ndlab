@@ -62,6 +62,7 @@ def launch_bridge_command(
     connect.start_bridge(
         name=name,
         log_file=cli_common.sanitize_log_file(log_file),
+        debug=debug,
         tcp_endpoints=tcp_endpoints,
         physical_endpoint=physical_endpoint,
         tap_endpoint=tap_endpoint,
