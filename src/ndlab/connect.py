@@ -138,6 +138,7 @@ def error_exit(msg):
 
 def get_packets_from_tcp_buffer(buffer: bytes) -> list[bytes]:
     packets = []
+    _original_length = len(buffer)
     _buffer = collections.deque(buffer)
     while _buffer:
         try:
@@ -150,7 +151,9 @@ def get_packets_from_tcp_buffer(buffer: bytes) -> list[bytes]:
         try:
             packet = bytes(_buffer.popleft() for _ in range(reported_size_int))
         except IndexError:
-            logger.error(f"Unable to read {reported_size_int} bytes from payload")
+            logger.error(
+                f"Unable to read {reported_size_int} bytes from payload.  OG: {_original_length}"
+            )
             break
         logger.debug(f"Found a packet with {reported_size_int} bytes")
         packets.append(packet)
