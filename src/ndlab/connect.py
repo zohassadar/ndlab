@@ -633,8 +633,7 @@ def start_bridge(
     sniffer_port: int | None = None,
     debug: bool = False,
 ):
-    # common.set_logging(debug, file=log_file)
-    common.set_logging(debug)
+    common.set_logging(debug, file=log_file)
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
 
