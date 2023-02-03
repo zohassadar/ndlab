@@ -6,9 +6,11 @@ packet = the payload without the 4 bytes describing size
 from __future__ import annotations
 
 import asyncio
+import fcntl
 import ipaddress
 import itertools
 import logging
+import os
 import signal
 import socket
 import struct
@@ -173,7 +175,9 @@ class Bridge:
         self,
         name: str,
         tcp_endpoints: list[TCPClient],
-        physical_endpoint: PhysicalNetworkInterfaceClient | None = None,
+        physical_endpoint: PhysicalNetworkInterfaceClient
+        | TapInterfaceClient
+        | None = None,
         sniffer_endpoint: TCPSnifferServer | None = None,
     ):
         self.name = name
@@ -275,6 +279,72 @@ class TCPClient:
                 stop = True
                 logger.error(f"Exception raised.  {exc!s}")
                 raise
+
+
+class TapInterfaceClient:
+    TUNSETIFF = 0x400454CA
+    TUNSETOWNER = TUNSETIFF + 2
+    IFF_TAP = 0x0002
+    IFF_NO_PI = 0x1000
+
+    def __repr__(self):
+        return f"{type(self).__name__}({self.interface})"
+
+    def __init__(self, interface: str):
+        self.interface = interface
+        self.receive_queue = asyncio.Queue()
+        self.send_queues: list[asyncio.Queue] = []
+        # setup tap side
+
+        self.tap = os.open("/dev/net/tun", os.O_RDWR)
+        fcntl.ioctl(
+            self.tap,
+            self.TUNSETIFF,
+            struct.pack(
+                "16sH",
+                interface.encode(),
+                self.IFF_TAP | self.IFF_NO_PI,
+            ),
+        )
+
+    async def disconnect(self):
+        logger.info(f"Closing connection")
+        try:
+            os.close(self.tap)
+        except:
+            logger.error(f"Unable to close tap", exc_info=True)
+
+    async def connect(self):
+
+        await asyncio.gather(
+            self.write_tap(),
+            self.read_tap(),
+        )
+
+    async def write_tap(self):
+        loop = asyncio.get_running_loop()
+        while True:
+            payload = await self.receive_queue.get()
+            packet = get_packet_from_payload(payload)
+            if not packet:
+                logger.error(f"Tap received empty response from queue")
+                continue
+            logger.log(9, f"TAP forwarding {len(packet)} to interface")
+            await loop.run_in_executor(None, os.write, self.tap, packet)
+
+    async def read_tap(self):
+        loop = asyncio.get_running_loop()
+        while True:
+            packet = await loop.run_in_executor(None, os.read, self.tap, MAX_READ)
+            logger.log(9, f"Tap packet of length {len(packet)} from interface")
+            queues = len(self.send_queues)
+            payload = get_payload_from_packet(packet)
+            for index, queue in enumerate(self.send_queues, start=1):
+                logger.log(
+                    9,
+                    f"Sending payload of length {len(payload)} to queue {index} of {queues}",
+                )
+                await queue.put(payload)
 
 
 class PhysicalNetworkInterfaceClient:
@@ -456,7 +526,9 @@ def start_bridge(
     tcp_instances = []
 
     physical_instance = None
-    if physical_endpoint:
+    if physical_endpoint and "tap" in physical_endpoint:
+        physical_instance = TapInterfaceClient(physical_endpoint)
+    else:
         physical_instance = PhysicalNetworkInterfaceClient(physical_endpoint)
     sniffer_instance = None
     if sniffer_endpoint:
@@ -496,3 +568,12 @@ def start_bridge(
 
     except Exception as exc:
         error_exit(f"Problem! {type(exc).__name__}: {exc!s}")
+
+
+"""
+sudo ip tuntap add mod tap name tappity0
+ip link set dev tappity0 up
+ip address add 192.168.13.1/24 dev tappity0
+
+
+"""
