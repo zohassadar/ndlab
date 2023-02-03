@@ -44,7 +44,7 @@ def is_device_promiscuous(interface: str) -> bool:
     if not (flagsfile := (flagsfile / FLAGS)).exists():
         raise RuntimeError(f"{FLAGS} not found in {flagsfile}")
     try:
-        flags = open(flagsfile).read().strip()
+        flags = open(flagsfile, "r+").read().strip()
     except:
         logger.error(f"Unable to open {flagsfile}", exc_info=True)
         raise
@@ -176,20 +176,22 @@ class Bridge:
         self,
         name: str,
         tcp_endpoints: list[TCPClient],
-        physical_endpoint: PhysicalNetworkInterfaceClient
-        | TapInterfaceClient
-        | None = None,
         sniffer_endpoint: TCPSnifferServer | None = None,
+        physical_endpoint: PhysicalNetworkInterfaceClient | None = None,
+        tap_endpoint: TapInterfaceClient | None = None,
     ):
         self.name = name
         self.tcp_endpoints = tcp_endpoints
         self.physical_endpoint = physical_endpoint
         self.sniffer_endpoint = sniffer_endpoint
+        self.tap_endpoint = tap_endpoint
         self._combined: list[ConnectionEndpoint] = self.tcp_endpoints  # type: ignore
-        if self.physical_endpoint:
-            self._combined.append(self.physical_endpoint)  # type: ignore
         if self.sniffer_endpoint:
             self._combined.append(self.sniffer_endpoint)  # type: ignore
+        if self.physical_endpoint:
+            self._combined.append(self.physical_endpoint)  # type: ignore
+        if self.tap_endpoint:
+            self._combined.append(self.tap_endpoint)  # type: ignore
         self.task: asyncio.Task | None = None
 
     async def connect(self):
@@ -519,7 +521,8 @@ def start_bridge(
     log_file: str,
     tcp_endpoints: list[str],
     physical_endpoint: str,
-    sniffer_endpoint: str,
+    tap_endpoint: str,
+    sniffer_port: int | None = None,
     debug: bool = False,
 ):
     common.set_logging(debug, file=log_file)
@@ -529,22 +532,18 @@ def start_bridge(
     tcp_instances = []
 
     physical_instance = None
-    # Hack to separate these for now
-    if physical_endpoint and "tap" in physical_endpoint:
-        physical_instance = TapInterfaceClient(physical_endpoint)
-    else:
+    if physical_endpoint:
         physical_instance = PhysicalNetworkInterfaceClient(physical_endpoint)
+
+    tap_instance = None
+    if tap_endpoint:
+        tap_instance = TapInterfaceClient(tap_endpoint)
+
     sniffer_instance = None
-    if sniffer_endpoint:
-        try:
-            host, port = sniffer_endpoint.split(":")
-            port = int(port)
-            ipaddress.IPv4Address(host)
-        except Exception as exc:
-            error_exit(
-                f"Invalid input: {sniffer_endpoint!r} {type(exc).__name__}: {exc!s}",
-            )
-        sniffer_instance = TCPSnifferServer(port=port, bind_address=host)
+    if sniffer_port:
+        sniffer_instance = TCPSnifferServer(
+            port=sniffer_port, bind_address=common.LOCALHOST
+        )
 
     for tcp_endpoint in tcp_endpoints:
         try:
@@ -565,6 +564,7 @@ def start_bridge(
             name=name,
             tcp_endpoints=tcp_instances,
             physical_endpoint=physical_instance,
+            tap_endpoint=tap_instance,
             sniffer_endpoint=sniffer_instance,
         )
         asyncio.run(connect(bridge))

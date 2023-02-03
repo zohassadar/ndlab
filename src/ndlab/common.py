@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-import logging.handlers
+
 import os
 import pathlib
 import re
@@ -10,6 +10,16 @@ import typing as T
 if T.TYPE_CHECKING:
     from ndlab.console import ConsoleDumper
     from ndlab.config import DeviceInfo
+
+
+def get_free_port() -> int:
+    import contextlib
+    import socket
+
+    with contextlib.closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as s:
+        s.bind(("", 0))
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        return s.getsockname()[1]
 
 
 DEVICE_IS_READY = b"DEVICE IS READY!"
@@ -25,16 +35,22 @@ MAX_SIZE = 10000
 
 NDLAB_DIRECTORY_ENV = "NDLAB_DIRECTORY"
 NDLAB_DIRECTORY_DEFAULT = pathlib.Path.home() / ".ndlab"
-NDLAB_DIRECTORY = pathlib.Path(os.getenv(NDLAB_DIRECTORY_ENV, NDLAB_DIRECTORY_DEFAULT))
+NDLAB_DIRECTORY = pathlib.Path(
+    os.getenv(NDLAB_DIRECTORY_ENV, NDLAB_DIRECTORY_DEFAULT),
+)
 
 STATE_FILE_ENV = "NDLAB_STATE_FILE"
 STATE_FILE_DEFAULT = NDLAB_DIRECTORY / "ndlab.yml"
-NDLAB_STATE_FILE = pathlib.Path(os.getenv(STATE_FILE_ENV, STATE_FILE_DEFAULT))
+NDLAB_STATE_FILE = pathlib.Path(
+    os.getenv(STATE_FILE_ENV, STATE_FILE_DEFAULT),
+)
 
 
 LABS_DIRECTORY_ENV = "NDLAB_LABS"
 LABS_DEFAULT_DIRECTORY = NDLAB_DIRECTORY / "labs"
-LABS_DIRECTORY = pathlib.Path(os.getenv(LABS_DIRECTORY_ENV, LABS_DEFAULT_DIRECTORY))
+LABS_DIRECTORY = pathlib.Path(
+    os.getenv(LABS_DIRECTORY_ENV, LABS_DEFAULT_DIRECTORY),
+)
 
 
 IMAGES_DIRECTORY_ENV = "NDLAB_IMAGES"
@@ -45,7 +61,9 @@ IMAGES_DIRECTORY = pathlib.Path(
 
 BUILDS_DIRECTORY_ENV = "NDLAB_BUILD_DIRECTORY"
 BUILDS_DIRECTORY_DEFAULT = NDLAB_DIRECTORY / "builds"
-BUILDS_DIRECTORY = os.getenv(BUILDS_DIRECTORY_ENV, BUILDS_DIRECTORY_DEFAULT)
+BUILDS_DIRECTORY = pathlib.Path(
+    os.getenv(BUILDS_DIRECTORY_ENV, BUILDS_DIRECTORY_DEFAULT),
+)
 
 QEMU_OUI = "52:54:00"
 
@@ -164,6 +182,7 @@ class VirtualNetworkDevice(T.Protocol):
 
 def set_logging(debug: bool, file=None):
     global logging
+    import logging.handlers
 
     level = logging.DEBUG if debug else logging.INFO
     BASIC_FORMAT = dict(

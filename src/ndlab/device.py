@@ -30,13 +30,6 @@ def get_template_by_name(name):
     return environment.get_template(name)
 
 
-def get_free_port() -> int:
-    with contextlib.closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as s:
-        s.bind(("", 0))
-        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        return s.getsockname()[1]
-
-
 def set_port_index(ports: dict[int, int], port: int):
     highest_index = max(ports) if ports else -1
     ports[highest_index + 1] = port
@@ -213,7 +206,7 @@ class DefaultNetworkDevice:
         logger.debug(f'Qemu command: {" ".join(self.qemu_cmd)}')
 
     def get_available_port(self) -> int:
-        return get_free_port()
+        return common.get_free_port()
 
     def platform_specific_qemu_args(self) -> list:
         logger.debug(f"Generic platform specific qemu args.  nothing defined here")

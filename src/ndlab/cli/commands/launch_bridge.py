@@ -32,11 +32,17 @@ logger = logging.getLogger(__name__)
 )
 @click.option(
     "-s",
-    "--sniffer-endpoint",
+    "--sniffer-port",
+    type=int,
 )
 @click.option(
     "-p",
     "--physical-endpoint",
+    shell_complete=cli_common.physical_interface_completion,
+)
+@click.option(
+    "-T",
+    "--tap-endpoint",
     shell_complete=cli_common.physical_interface_completion,
 )
 def launch_bridge_command(
@@ -44,18 +50,20 @@ def launch_bridge_command(
     name,
     log_file,
     physical_endpoint,
-    sniffer_endpoint,
+    tap_endpoint,
+    sniffer_port,
     tcp_endpoints,
 ):
     common.set_logging(debug)
 
     logger.debug(
-        f"Launch connection invoked {name=} {log_file=} {physical_endpoint=} {sniffer_endpoint=} {tcp_endpoints=}",
+        f"Launch connection invoked {name=} {log_file=} {sniffer_port=} {physical_endpoint=} {tap_endpoint=} {tcp_endpoints=}",
     )
     connect.start_bridge(
         name=name,
         log_file=cli_common.sanitize_log_file(log_file),
         tcp_endpoints=tcp_endpoints,
         physical_endpoint=physical_endpoint,
-        sniffer_endpoint=sniffer_endpoint,
+        tap_endpoint=tap_endpoint,
+        sniffer_port=sniffer_port,
     )

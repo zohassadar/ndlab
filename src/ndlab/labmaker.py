@@ -41,9 +41,8 @@ class NICEndPoint(T.TypedDict):
     interface: str
 
 
-class SnifferEndpoint(T.TypedDict):
-    host: str
-    port: int
+class TAPEndPoint(T.TypedDict):
+    interface: str
 
 
 class TCPEndPointDict(T.TypedDict):
@@ -54,7 +53,7 @@ class TCPEndPointDict(T.TypedDict):
 class BridgeDict(T.TypedDict):
     name: str
     tcp_endpoints: list[TCPEndPointDict]
-    sniffer_endpoint: SnifferEndpoint | None
+    tap_endpoint: TAPEndPoint | None
     interface_endpoint: NICEndPoint | None
 
 
@@ -92,7 +91,7 @@ class Topology:
             bridge = BridgeDict(
                 name=hubname,
                 tcp_endpoints=tcp_endpoints,
-                sniffer_endpoint=None,
+                tap_endpoint=None,
                 interface_endpoint=None,
             )
             for device in devices:
@@ -140,7 +139,7 @@ class Topology:
         return BridgeDict(
             name=name,
             tcp_endpoints=[_device_a, _device_b],
-            sniffer_endpoint=None,
+            tap_endpoint=None,
             interface_endpoint=None,
         )
 

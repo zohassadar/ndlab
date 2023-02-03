@@ -46,11 +46,10 @@ class TCPEndpointOutput(T.TypedDict):
     port: int | None
 
 
-class SnifferEndpointOutput(T.TypedDict):
+class TapEndpointOutput(T.TypedDict):
     bridge: str
     state: str
-    host: str
-    port: int
+    interface: str
 
 
 class NICEndpointOutput(T.TypedDict):
@@ -87,9 +86,8 @@ class DeviceState:
 
 
 @dataclasses.dataclass
-class SnifferEndpoint:
-    host: str
-    port: int
+class TapEndpoint:
+    interface: str
 
 
 @dataclasses.dataclass
@@ -106,6 +104,7 @@ class PhysicalConnectionEndpoint:
 @dataclasses.dataclass
 class ConnectionState:
     name: str
+    sniffer_port: int | None = None
     pid: int | None = None
 
 
@@ -113,7 +112,7 @@ class ConnectionState:
 class State:
     devices: dict[str, DeviceState] = dataclasses.field(default_factory=dict)
     bridges: dict[str, ConnectionState] = dataclasses.field(default_factory=dict)
-    sniffer_endpoints: dict[str, SnifferEndpoint] = dataclasses.field(
+    tap_endpoints: dict[str, TapEndpoint] = dataclasses.field(
         default_factory=dict,
     )
     phyical_endpoints: dict[str, PhysicalConnectionEndpoint] = dataclasses.field(
@@ -168,25 +167,11 @@ class State:
         except Exception as exc:
             self._error_raise(f"Invalid device and interface index: {endpoint}")
 
-    def _split_sniffer_host_port(self, sniffer) -> tuple[str, int]:
-        import ipaddress
-
-        try:
-            host, port = sniffer.split(":")
-            port = int(port)
-            ipaddress.IPv4Address(host)
-            return host, port
-        except Exception as exc:
-            self._error_raise(f"Invalid tcp sniffer endpoint: {sniffer}")
-
     def _validate_nic(self, physical_nic):
         import psutil
 
         if not psutil.net_if_addrs():
             self._error_raise(f"Invalid NIC: {physical_nic}")
-
-    def _validate_sniffer_input(self, sniffer):
-        self._split_sniffer_host_port(sniffer)
 
     def _validate_tcp_endpoints(self, tcp_endpoints: list[str]) -> None:
         for tcp_endpoint in tcp_endpoints:
@@ -340,7 +325,7 @@ class State:
         self,
     ) -> tuple[
         list[TCPEndpointOutput],
-        list[SnifferEndpointOutput],
+        list[TapEndpointOutput],
         list[NICEndpointOutput],
     ]:
         tcp_outputs = []
@@ -349,13 +334,12 @@ class State:
         bridge_state = (
             lambda bridge: "running" if self.bridges[bridge].pid else "stopped"
         )
-        for bridge, sniffer in self.sniffer_endpoints.items():
+        for bridge, interface in self.tap_endpoints.items():
             sniffer_outputs.append(
-                SnifferEndpointOutput(
+                TapEndpointOutput(
                     bridge=bridge,
                     state=bridge_state(bridge),
-                    host=sniffer.host,
-                    port=sniffer.port,
+                    interface=interface.interface,
                 ),
             )
         for bridge, interface in self.phyical_endpoints.items():
@@ -420,7 +404,7 @@ class State:
         name: str,
         tcp_endpoints: list[str],
         nic_endpoint: str | None = None,
-        sniffer_endpoint: str | None = None,
+        tap_endpoint: str | None = None,
     ):
         endpoints = 0
 
@@ -430,8 +414,8 @@ class State:
         self._validate_tcp_endpoints(tcp_endpoints)
         for _ in tcp_endpoints:
             endpoints += 1
-        if sniffer_endpoint:
-            self._validate_sniffer_input(sniffer_endpoint)
+        if tap_endpoint:
+            self._validate_nic(tap_endpoint)
             endpoints += 1
         if nic_endpoint:
             self._validate_nic(nic_endpoint)
@@ -444,12 +428,8 @@ class State:
                 interface=nic_endpoint,
             )
 
-        if sniffer_endpoint:
-            host, port = self._split_sniffer_host_port(sniffer_endpoint)
-            self.sniffer_endpoints[name] = SnifferEndpoint(
-                host=host,
-                port=port,
-            )
+        if tap_endpoint:
+            self.tap_endpoints[name] = TapEndpoint(interface=tap_endpoint)
         for tcp_endpoint in tcp_endpoints:
             device_name, index = self._split_device_interface_index(tcp_endpoint)
             self.devices[device_name].interfaces[index].connection = name
@@ -482,6 +462,7 @@ class State:
         if bridge := self.bridges.get(bridge_name):
             self._stop_pid(bridge.pid)
             self.bridges[bridge_name].pid = None
+            self.bridges[bridge_name].sniffer_port = None
             if not delete:
                 logger.info(f"Not deleting {bridge_name}")
                 return
@@ -491,7 +472,7 @@ class State:
 
         logger.info(f"Deleting bridge {bridge}")
         self.bridges.pop(bridge_name, None)
-        self.sniffer_endpoints.pop(bridge_name, None)
+        self.tap_endpoints.pop(bridge_name, None)
         self.phyical_endpoints.pop(bridge_name, None)
 
     def stop_device(self, device_name: str, delete=False):
@@ -518,13 +499,14 @@ class State:
         bridge_state = self.get_bridge_state(bridge_name)
         if bridge_state.pid:
             self._error_raise(f"Bridge {bridge_name} already running")
-
-        command = self.get_bridge_command(bridge_name)
+        bridge_state.sniffer_port = common.get_free_port()
+        command = self.get_bridge_command(bridge_name, bridge_state.sniffer_port)
         self.bridges[bridge_name].pid = self._background_command(command)
 
     def get_bridge_command(
         self,
-        bridge_name,
+        bridge_name: str,
+        sniffer_port: int,
     ):
         tcp_endpoints = []
         for device_name, device in self.devices.items():
@@ -549,19 +531,24 @@ class State:
         command.append("launch-bridge")
         command.extend(["--name", bridge_name])
         command.extend(["--log-file", str(log_file)])
-        if sniffer_endpoint := self.sniffer_endpoints.get(bridge_name):
-            endpoint = f"{sniffer_endpoint.host}:{sniffer_endpoint.port}"
-            command.extend(
-                [
-                    "--sniffer-endpoint",
-                    endpoint,
-                ],
-            )
+        command.extend(
+            [
+                "--sniffer-port",
+                str(sniffer_port),
+            ],
+        )
         for tcp_endpoint in tcp_endpoints:
             command.extend(
                 [
                     "--tcp-endpoint",
                     tcp_endpoint,
+                ],
+            )
+        if tap_endpoint := self.tap_endpoints.get(bridge_name):
+            command.extend(
+                [
+                    "--tap-endpoint",
+                    tap_endpoint.interface,
                 ],
             )
         if physical_endpoint := self.phyical_endpoints.get(bridge_name):

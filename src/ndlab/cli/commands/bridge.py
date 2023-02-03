@@ -117,7 +117,7 @@ def bridge_list(debug):
     help="Add new bridge",
 )
 @cli_common.shared_options.debug
-@click.option("--sniffer")
+@click.option("--tap", shell_complete=cli_common.physical_interface_completion)
 @click.option("--physical", shell_complete=cli_common.physical_interface_completion)
 @click.option("--name", required=True)
 @click.option(
@@ -129,19 +129,19 @@ def bridge_list(debug):
 def bridge_add(
     debug,
     name: str,
-    sniffer: str,
+    tap: str,
     physical: str,
     tcp_endpoints: tuple[str],
 ):
 
     common.set_logging(debug)
-    logger.debug(f"bridge add invoked {name=} {sniffer=} {physical=} {tcp_endpoints=}")
+    logger.debug(f"bridge add invoked {name=} {tap=} {physical=} {tcp_endpoints=}")
     with cli_common.get_write_state() as state:
         state.add_bridge(
             name,
             list(tcp_endpoints),
             nic_endpoint=physical,
-            sniffer_endpoint=sniffer,
+            tap_endpoint=tap,
         )
 
 
@@ -152,3 +152,13 @@ def bridge_add(
 def register_bridge_pid(debug, name, pid: int):
     with cli_common.get_write_state() as state:
         state.register_bridge_pid(name, pid)
+
+
+@bridge_command.command(help="Prints command to sniff a bridge")
+@cli_common.shared_options.debug
+@click.argument("name", shell_complete=cli_common.running_bridge_completion)
+def sniff(debug, name):
+    common.set_logging(debug)
+    state = cli_common.get_read_state()
+    bridge = state.get_running_bridge_state(name)
+    print(f"nc {common.LOCALHOST} {bridge.sniffer_port} | wireshark -k -i -")
