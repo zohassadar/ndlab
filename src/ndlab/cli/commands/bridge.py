@@ -53,6 +53,7 @@ def bridge_delete(debug, names, all):
 )
 @click.argument(
     "names",
+    nargs=-1,
     shell_complete=cli_common.running_bridge_completion,
 )
 def bridge_stop(debug, names, all):
