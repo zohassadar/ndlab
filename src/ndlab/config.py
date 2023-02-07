@@ -5,8 +5,6 @@ import logging
 import pprint
 import typing as T
 
-import jinja2
-
 import ndlab
 
 if T.TYPE_CHECKING:
