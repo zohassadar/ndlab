@@ -85,10 +85,19 @@ def load(debug, filename, validate):
                 )
                 for ep in bridge["tcp_endpoints"]
             ]
+
+            nic_endpoint = None
+            if bridge["interface_endpoint"]:
+                nic_endpoint = bridge["interface_endpoint"]["interface"]
+            tap_endpoint = None
+            if bridge["tap_endpoint"]:
+                tap_endpoint = bridge["tap_endpoint"]["interface"]
             try:
                 state.add_bridge(
                     name=bridge_name,
                     tcp_endpoints=endpoints_as_strings,
+                    nic_endpoint=nic_endpoint,
+                    tap_endpoint=tap_endpoint,
                 )
             except:
                 logger.debug(f"Unable to load {bridge_name}")

@@ -24,7 +24,7 @@ DEVICES = "devices"
 BRIDGES = "bridges"
 MULTIPOINT = "multipoint"
 
-
+TAP_INTERFACES = "taps"
 LINKS_BY_DEVICE = "links_by_device"
 
 FULL_MESH_P2P = "full_mesh_p2p"
@@ -73,6 +73,19 @@ class Topology:
         self.validate_devices()
         self.bridges: list[BridgeDict] = []
         self.next_available_interface = collections.defaultdict(int)
+
+        for tap in high_level_data.get(TAP_INTERFACES, []):
+            tap = T.cast(dict[str, str], tap)
+            for device, tap_interface in tap.items():
+                tap_endpoint = TAPEndPoint(interface=tap_interface)
+                tcp_endpoint = self.get_new_tcp_endpoint(device)
+                tapbridge = BridgeDict(
+                    name=f"tap-{tap_interface}--{device}",
+                    tcp_endpoints=[tcp_endpoint],
+                    tap_endpoint=tap_endpoint,
+                    interface_endpoint=None,
+                )
+                self.bridges.append(tapbridge)
 
         for device, neighbors in high_level_data.get(POINT_TO_POINT, {}).items():
             for neighbor in neighbors:
